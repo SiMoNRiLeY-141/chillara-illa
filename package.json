@@ -1,0 +1,43 @@
+{
+  "name": "kadam-parayaruth",
+  "version": "1.0.0",
+  "description": "Kadam Parayaruth - Premium Commercial Invoicing SaaS App",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "server": "node server.js",
+    "dev-server": "nodemon server.js",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "firebase": "^11.10.0"
+  },
+  "devDependencies": {
+    "body-parser": "^1.20.2",
+    "cors": "^2.8.5",
+    "electron": "^25.9.8",
+    "electron-builder": "^24.6.0",
+    "express": "^4.18.2",
+    "sqlite3": "^5.1.6"
+  },
+  "build": {
+    "appId": "com.kadamparayaruth.app",
+    "productName": "Kadam Parayaruth",
+    "publish": null,
+    "files": [
+      "main.js",
+      "preload.js",
+      "public/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    }
+  }
+}
