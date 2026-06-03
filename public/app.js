@@ -1,7 +1,7 @@
 let firebaseConfig = null;
 
 function getFirestoreBaseUrl() {
-  return firebaseConfig ? `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/default/documents` : '';
+  return firebaseConfig ? `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/(default)/documents` : '';
 }
 function getSignInUrl() {
   return firebaseConfig ? `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${firebaseConfig.apiKey}` : '';
@@ -11,6 +11,14 @@ function getSignUpUrl() {
 }
 
 async function loadConfig() {
+  if (window.electron && window.electron.getFirebaseConfig) {
+    try {
+      firebaseConfig = await window.electron.getFirebaseConfig();
+      if (firebaseConfig) return true;
+    } catch (e) {
+      console.error("Failed to load config via window.electron.getFirebaseConfig:", e);
+    }
+  }
   try {
     const res = await fetch('firebase-config.json');
     if (res.ok) {
@@ -51,7 +59,7 @@ function restoreSession() {
   return false;
 }
 
-async function getShopProfileRest() {
+async function getShopProfile() {
   try {
     const response = await firestoreRequest(`/users/${firebaseAuthState.localId}/settings/profile`, { method: "GET" });
     return decodeFirestoreDocument(await response.json());
@@ -60,28 +68,14 @@ async function getShopProfileRest() {
   }
 }
 
-async function saveShopProfileRest(profileData) {
+async function saveShopProfile(profileData) {
   await firestoreRequest(`/users/${firebaseAuthState.localId}/settings/profile`, {
     method: "PATCH",
     body: JSON.stringify(encodeFirestoreRecord(profileData))
   });
 }
 
-async function getShopProfile() {
-  if (window.api && window.api.getShopProfile) {
-    return await window.api.getShopProfile();
-  }
-  return await getShopProfileRest();
-}
-
-async function saveShopProfile(profileData) {
-  if (window.api && window.api.saveShopProfile) {
-    return await window.api.saveShopProfile(profileData);
-  }
-  return await saveShopProfileRest(profileData);
-}
-
-async function sendPasswordResetRest(email) {
+async function sendPasswordReset(email) {
   const url = `https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${firebaseConfig.apiKey}`;
   const response = await fetch(url, {
     method: "POST",
@@ -93,13 +87,6 @@ async function sendPasswordResetRest(email) {
     throw new Error(err.error?.message || "Password reset failed");
   }
   return await response.json();
-}
-
-async function sendPasswordReset(email) {
-  if (window.api && window.api.sendPasswordReset) {
-    return await window.api.sendPasswordReset(email);
-  }
-  return await sendPasswordResetRest(email);
 }
 
 function updateShopProfileUI(profile) {
@@ -223,14 +210,6 @@ function closeProfileModal() {
 }
 
 async function loginRest(email, password) {
-  if (window.api && window.api.signIn) {
-    const state = await window.api.signIn(email, password);
-    firebaseAuthState = state;
-    localStorage.setItem("firebase.auth", JSON.stringify(firebaseAuthState));
-    updateAuthUI();
-    return firebaseAuthState;
-  }
-
   const url = getSignInUrl();
   if (!url) throw new Error("Firebase is not configured.");
   const response = await fetch(url, {
@@ -245,6 +224,7 @@ async function loginRest(email, password) {
   const data = await response.json();
   firebaseAuthState = {
     idToken: data.idToken,
+    refreshToken: data.refreshToken,
     localId: data.localId,
     email: data.email,
   };
@@ -254,14 +234,6 @@ async function loginRest(email, password) {
 }
 
 async function registerRest(email, password) {
-  if (window.api && window.api.signUp) {
-    const state = await window.api.signUp(email, password);
-    firebaseAuthState = state;
-    localStorage.setItem("firebase.auth", JSON.stringify(firebaseAuthState));
-    updateAuthUI();
-    return firebaseAuthState;
-  }
-
   const url = getSignUpUrl();
   if (!url) throw new Error("Firebase is not configured.");
   const response = await fetch(url, {
@@ -276,6 +248,7 @@ async function registerRest(email, password) {
   const data = await response.json();
   firebaseAuthState = {
     idToken: data.idToken,
+    refreshToken: data.refreshToken,
     localId: data.localId,
     email: data.email,
   };
@@ -287,9 +260,6 @@ async function registerRest(email, password) {
 function logoutRest() {
   localStorage.removeItem("firebase.auth");
   firebaseAuthState = null;
-  if (window.api && window.api.signOutUser) {
-    window.api.signOutUser();
-  }
   updateAuthUI();
   clearForm();
 }
@@ -365,6 +335,32 @@ function decodeFirestoreDocument(document) {
   };
 }
 
+async function refreshAuthTokenRest() {
+  if (!firebaseAuthState || !firebaseAuthState.refreshToken) return false;
+  try {
+    const url = `https://securetoken.googleapis.com/v1/token?key=${firebaseConfig.apiKey}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: `grant_type=refresh_token&refresh_token=${firebaseAuthState.refreshToken}`
+    });
+    if (res.ok) {
+      const data = await res.json();
+      firebaseAuthState = {
+        idToken: data.id_token,
+        refreshToken: data.refresh_token,
+        localId: data.user_id,
+        email: firebaseAuthState.email
+      };
+      localStorage.setItem("firebase.auth", JSON.stringify(firebaseAuthState));
+      return true;
+    }
+  } catch (e) {
+    console.error("Token refresh failed:", e);
+  }
+  return false;
+}
+
 async function firestoreRequest(path, options = {}) {
   if (!firebaseAuthState) {
     restoreSession();
@@ -372,6 +368,23 @@ async function firestoreRequest(path, options = {}) {
   if (!firebaseAuthState) {
     throw new Error("Authentication required. Please log in first.");
   }
+
+  try {
+    const parts = firebaseAuthState.idToken.split('.');
+    if (parts.length === 3) {
+      const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+      const exp = payload.exp * 1000;
+      if (exp <= Date.now() + 60000) {
+        const refreshed = await refreshAuthTokenRest();
+        if (!refreshed) {
+          throw new Error("Session expired. Please log in again.");
+        }
+      }
+    }
+  } catch (err) {
+    console.error("Auto token refresh failed:", err);
+  }
+
   const headers = new Headers(options.headers || {});
   headers.set("Authorization", `Bearer ${firebaseAuthState.idToken}`);
   if (!headers.has("Content-Type") && options.body) {
@@ -921,11 +934,25 @@ async function refreshFirebaseStatus() {
       return;
     }
     const status = await api.getFirebaseStatus();
+    if (status.initError) {
+      console.error("Firebase Preload Init Error:", status.initError);
+      $("dbStatus").innerText = "Init Error: " + status.initError.slice(0, 100);
+      return;
+    }
     if (status.connected) {
+      firebaseAuthState = {
+        localId: status.userId,
+        email: status.email,
+        idToken: firebaseAuthState?.idToken || "",
+        refreshToken: firebaseAuthState?.refreshToken || ""
+      };
+      localStorage.setItem("firebase.auth", JSON.stringify(firebaseAuthState));
       updateAuthUI();
       loadAndApplyUserProfile();
     } else {
-      $("dbStatus").innerText = "Please log in to sync invoices.";
+      localStorage.removeItem("firebase.auth");
+      firebaseAuthState = null;
+      updateAuthUI();
     }
   } catch (error) {
     $("dbStatus").innerText = "Firebase connection failed.";
@@ -942,8 +969,18 @@ async function saveInvoiceToDB() {
     return null;
   }
 
+  const btn = $("saveBtn");
+  const originalText = btn ? btn.innerText : "💾 Save Invoice";
+  if (btn) {
+    btn.innerText = "💾 Saving...";
+    btn.disabled = true;
+  }
+
   try {
-    const saved = await api.saveInvoice(buildRecordFromForm());
+    const saved = await Promise.race([
+      api.saveInvoice(buildRecordFromForm()),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Connection timed out. Please ensure your Firestore Database is created and active in the Firebase Console.")), 8000))
+    ]);
     if (saved && saved.id) {
       $("invNo").value = saved.invNo || $("invNo").value;
       updatePreview();
@@ -955,6 +992,11 @@ async function saveInvoiceToDB() {
   } catch (error) {
     showToast("Save failed: " + error.message, "error");
     return null;
+  } finally {
+    if (btn) {
+      btn.innerText = originalText;
+      btn.disabled = false;
+    }
   }
 }
 
@@ -1111,6 +1153,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Shop Profile Form submission trigger
   $("profileForm").addEventListener("submit", async (event) => {
     event.preventDefault();
+    const btn = event.target.querySelector('button[type="submit"]');
+    const originalText = btn ? btn.innerText : 'Save Profile';
+    if (btn) {
+      btn.innerText = "Saving...";
+      btn.disabled = true;
+    }
     const shopName = $("profShopName").value.trim();
     const address = $("profAddress").value.trim();
     const phone = $("profPhone").value.trim();
@@ -1139,11 +1187,21 @@ document.addEventListener("DOMContentLoaded", async () => {
     
     try {
       showToast("Saving shop profile...", "info");
-      await saveShopProfile(profileData);
+      
+      await Promise.race([
+        saveShopProfile(profileData),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Connection timed out. Please ensure your Firestore Database is created and active in the Firebase Console.")), 8000))
+      ]);
+
+      btn.innerText = originalText;
+      btn.disabled = false;
+
       showToast("Shop profile saved successfully!", "success");
       updateShopProfileUI(profileData);
       closeProfileModal();
     } catch (e) {
+      btn.innerText = originalText;
+      btn.disabled = false;
       showToast("Failed to save profile: " + e.message, "error");
     }
   });
@@ -1182,35 +1240,41 @@ document.addEventListener("DOMContentLoaded", async () => {
         showToast("Please enter your email.", "error");
         return;
       }
-      try {
+    } else {
+      if (!email || !password) {
+        showToast("Please enter email and password.", "error");
+        return;
+      }
+      
+      if (currentAuthMode === "register") {
+        const strength = checkPasswordStrength(password);
+        if (strength === "weak" || password.length < 8) {
+          showToast("Password is too weak. Please choose a stronger password.", "error");
+          return;
+        }
+      }
+    }
+
+    const btn = $("modalSubmitBtn");
+    const originalText = btn ? btn.innerText : "";
+    if (btn) {
+      btn.disabled = true;
+      if (currentAuthMode === "login") btn.innerText = "Signing In...";
+      else if (currentAuthMode === "register") btn.innerText = "Registering...";
+      else if (currentAuthMode === "forgot") btn.innerText = "Sending...";
+    }
+
+    try {
+      if (currentAuthMode === "forgot") {
         $("dbStatus").innerText = "Sending reset email...";
         await sendPasswordReset(email);
         showToast("Password reset email sent! Check your inbox.", "success");
         openAuthModal("login");
-      } catch (e) {
-        showToast(e.message, "error");
-      }
-      return;
-    }
-    
-    if (!email || !password) {
-      showToast("Please enter email and password.", "error");
-      return;
-    }
-    
-    if (currentAuthMode === "register") {
-      const strength = checkPasswordStrength(password);
-      if (strength === "weak" || password.length < 8) {
-        showToast("Password is too weak. Please choose a stronger password.", "error");
-        return;
-      }
-    }
-
-    try {
-      if (currentAuthMode === "login") {
+      } else if (currentAuthMode === "login") {
         $("dbStatus").innerText = "Logging in...";
         await loginRest(email, password);
         showToast("Logged in successfully!", "success");
+        fetchNextInvoiceNo();
       } else {
         $("dbStatus").innerText = "Registering...";
         await registerRest(email, password);
@@ -1236,7 +1300,10 @@ document.addEventListener("DOMContentLoaded", async () => {
         };
         
         try {
-          await saveShopProfile(profileData);
+          await Promise.race([
+            saveShopProfile(profileData),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Connection timed out. Please ensure your Firestore Database is created and active in the Firebase Console.")), 8000))
+          ]);
           showToast("Profile set up successfully!", "success");
         } catch (profileErr) {
           console.error("Failed to save initial profile:", profileErr);
@@ -1244,11 +1311,26 @@ document.addEventListener("DOMContentLoaded", async () => {
         }
         
         showToast("Registered successfully!", "success");
+        fetchNextInvoiceNo();
       }
-      fetchNextInvoiceNo();
     } catch (e) {
       showToast(e.message, "error");
       refreshFirebaseStatus();
+    } finally {
+      if (btn) {
+        btn.innerText = originalText;
+        btn.disabled = false;
+      }
     }
   });
+
+  // Hide loading overlay after 2.5 seconds
+  setTimeout(() => {
+    const loader = $("loadingOverlay");
+    if (loader) {
+      loader.style.opacity = "0";
+      loader.style.visibility = "hidden";
+      setTimeout(() => loader.remove(), 500);
+    }
+  }, 2500);
 });

@@ -1,4 +1,4 @@
-# Kadam Parayaruth - Premium Commercial Invoicing SaaS App
+# Chillara Illa - Premium Commercial Invoicing SaaS App
 
 This is a premium, lightweight commercial invoicing application backed by Firebase and styled using modern, high-end CSS aesthetics.
 
@@ -10,7 +10,7 @@ Since this application is intended to run as a secure, private SaaS app with Fir
 
 1. **Create a Firebase Project**:
    - Go to the [Firebase Console](https://console.firebase.google.com/).
-   - Click **Add project** and name it (e.g., `kadam-parayaruth`).
+   - Click **Add project** and name it (e.g., `chillara-illa`).
 
 2. **Enable Authentication & Firestore Database**:
    - In the Firebase Console left menu, navigate to **Build** > **Authentication**, click **Get Started**, and enable the **Email/Password** sign-in provider.

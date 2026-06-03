@@ -172,7 +172,7 @@ app.get('/firebase-config.json', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Kadam Parayaruth billing server running at http://localhost:${PORT}`);
+  console.log(`Chillara Illa billing server running at http://localhost:${PORT}`);
 });
 
 module.exports = { DB_FILE };

@@ -276,7 +276,8 @@ button.remove:hover {
 
 .shop-logo {
   max-width: 200px;
-  height: auto;
+  max-height: 80px;
+  object-fit: contain;
   display: block;
 }
 
@@ -786,4 +787,50 @@ th {
     padding: 0;
     background: white;
   }
+}
+
+/* Loading Overlay & Logo styling */
+.loading-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background-color: var(--bg);
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  transition: opacity 0.5s ease, visibility 0.5s ease;
+}
+
+.loading-spinner {
+  width: 120px;
+  height: 120px;
+  animation: spin3d 2s infinite linear;
+}
+
+@keyframes spin3d {
+  0% { transform: perspective(400px) rotateY(0deg); }
+  100% { transform: perspective(400px) rotateY(360deg); }
+}
+
+.loading-text {
+  margin-top: 20px;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--primary);
+  letter-spacing: 2px;
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0% { opacity: 0.6; }
+  50% { opacity: 1; }
+  100% { opacity: 0.6; }
+}
+
+.app-logo-img {
+  height: 32px;
+  width: 32px;
+  object-fit: contain;
+  margin-right: 6px;
 }

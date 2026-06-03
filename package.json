@@ -1,7 +1,7 @@
 {
-  "name": "kadam-parayaruth",
+  "name": "chillara-illa",
   "version": "1.0.0",
-  "description": "Kadam Parayaruth - Premium Commercial Invoicing SaaS App",
+  "description": "Chillara Illa - Premium Commercial Invoicing SaaS App",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -24,8 +24,8 @@
     "sqlite3": "^5.1.6"
   },
   "build": {
-    "appId": "com.kadamparayaruth.app",
-    "productName": "Kadam Parayaruth",
+    "appId": "com.chillarailla.app",
+    "productName": "Chillara Illa",
     "publish": null,
     "files": [
       "main.js",
@@ -34,6 +34,7 @@
       "package.json"
     ],
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         "nsis",
         "portable"
