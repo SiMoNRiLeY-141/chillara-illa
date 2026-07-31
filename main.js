@@ -3,6 +3,30 @@ const path = require('path');
 const fs = require('fs');
 
 let mainWindow;
+const FIREBASE_WEB_CONFIG_FIELDS = [
+  'apiKey',
+  'authDomain',
+  'projectId',
+  'storageBucket',
+  'messagingSenderId',
+  'appId',
+  'measurementId'
+];
+
+function getFirebaseWebConfig(configPath) {
+  try {
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    if (typeof config.apiKey !== 'string' || typeof config.projectId !== 'string') return null;
+
+    return Object.fromEntries(
+      FIREBASE_WEB_CONFIG_FIELDS
+        .filter((field) => typeof config[field] === 'string')
+        .map((field) => [field, config[field]])
+    );
+  } catch {
+    return null;
+  }
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -28,11 +52,9 @@ ipcMain.handle('get-firebase-config', () => {
     path.join(__dirname, 'firebase-config.json')
   ];
   for (const p of paths) {
-    try {
-      if (fs.existsSync(p)) {
-        return JSON.parse(fs.readFileSync(p, 'utf8'));
-      }
-    } catch (e) {}
+    if (!fs.existsSync(p)) continue;
+    const config = getFirebaseWebConfig(p);
+    if (config) return config;
   }
   return null;
 });

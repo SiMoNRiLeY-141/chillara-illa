@@ -1,78 +1,66 @@
-# Chillara Illa - Premium Commercial Invoicing SaaS App
+# Chillara Illa
 
-This is a premium, lightweight commercial invoicing application backed by Firebase and styled using modern, high-end CSS aesthetics.
+Chillara Illa is a desktop-first invoicing application built with Electron, Express, and Firebase. It supports account access, invoice management, business-profile settings, Firestore sync, and local CSV exports.
 
-## Configuration & Prerequisites
+## Prerequisites
 
-Since this application is intended to run as a secure, private SaaS app with Firebase integration, **you must configure your Firebase project details before running or registering.**
+- Node.js 18 or later
+- A Firebase project with Email/Password Authentication and Cloud Firestore enabled
 
-### Firebase Setup Steps:
+## Setup
 
-1. **Create a Firebase Project**:
-   - Go to the [Firebase Console](https://console.firebase.google.com/).
-   - Click **Add project** and name it (e.g., `chillara-illa`).
+1. Install dependencies:
 
-2. **Enable Authentication & Firestore Database**:
-   - In the Firebase Console left menu, navigate to **Build** > **Authentication**, click **Get Started**, and enable the **Email/Password** sign-in provider.
-   - Navigate to **Build** > **Firestore Database**, click **Create database**, select a location, and choose to start in **Production mode** or **Test mode**.
-   
-3. **Register a Web App & Get Config**:
-   - In the Firebase Console Project Overview page, click the **Web icon (`</>`)** to register a web app.
-   - Copy the `firebaseConfig` object from the setup script. It looks like:
-     ```json
-     {
-       "apiKey": "YOUR_API_KEY",
-       "authDomain": "YOUR_PROJECT_ID.firebaseapp.com",
-       "projectId": "YOUR_PROJECT_ID",
-       "storageBucket": "YOUR_PROJECT_ID.firebasestorage.app",
-       "messagingSenderId": "YOUR_SENDER_ID",
-       "appId": "YOUR_APP_ID"
-     }
-     ```
+   ```bash
+   npm install
+   ```
 
-4. **Create the Local Config File**:
-   - Create a file named `firebase-config.json` in the root of this project (which is excluded from Git to prevent key exposure).
-   - Paste the config JSON object you copied in Step 3. (See `firebase-config.template.json` for structure).
+2. Create `firebase-config.json` in the repository root by copying `firebase-config.template.json`.
 
-5. **Firestore Security Rules**:
-   - Set the security rules in **Firestore Database** > **Rules** to allow users to read/write their own records:
-     ```javascript
-     rules_version = '2';
-     service cloud.firestore {
-       match /databases/{database}/documents {
-         match /users/{userId}/{document=**} {
-           allow read, write: if request.auth != null && request.auth.uid == userId;
-         }
-       }
-     }
-     ```
+3. Fill it with the Firebase web app configuration from **Project settings** in the Firebase console. This local file is intentionally ignored by Git.
 
----
+4. In Firebase Authentication, enable the **Email/Password** provider. Create a Cloud Firestore database and deploy the checked-in `firestore.rules` file. These rules scope every application record to its authenticated user's UID.
 
-## Running the Application
+   ```javascript
+   npx -y firebase-tools@latest deploy --only firestore:rules --project YOUR_PROJECT_ID
+   ```
 
-### 1. Install Dependencies:
+## Run
+
+Run the Electron application:
+
 ```bash
-npm install
+npm start
 ```
 
-### 2. Start the Application:
-- Run the Electron client app (recommended for native SDK features):
-  ```bash
-  npm start
-  ```
-- Alternatively, run the Express server for web access:
-  ```bash
-  npm run server
-  ```
-  And open http://localhost:3000 in your browser.
+For browser-based local development, start the Express server and open <http://localhost:3000>:
 
----
+```bash
+npm run server
+```
 
-## Technical Features
+## Packaging
 
-- **Shop Settings & Custom Logos**: Upload custom business logos (stored as Base64 strings in Firestore settings) and define business details dynamically.
-- **Conditional Receipt Header Rendering**: Auto-hides GSTIN line if no GST number is configured.
-- **Visual Password Strength Indicator**: Analyzes complex password combinations and requires a secure password on registration.
-- **Password Reset Flow**: Standard forgot password recovery emails via Firebase Auth.
-- **Database Backup**: Syncs invoices to Firestore while supporting local CSV exports.
+Create unpacked Electron output:
+
+```bash
+npm run pack
+```
+
+Create distributable installers:
+
+```bash
+npm run dist
+```
+
+Generated output is written outside version control.
+
+## Repository hygiene
+
+`firebase-config.json` is a **public web configuration** file. It may contain the Firebase Web API key, which is not a server secret and is necessarily available to the client. It must contain only the fields in `firebase-config.template.json`; the application filters any extra fields before exposing the configuration.
+
+Protect the Web API key in Google Cloud Console by restricting it to this Firebase project’s required APIs and to the app's approved web origins. Never place service-account JSON, private keys, admin SDK credentials, or third-party secrets in `firebase-config.json`, the renderer, or any committed file. Store those only in the deployment platform's secret manager or environment configuration.
+
+The Express server binds to `127.0.0.1` by default so its unauthenticated local invoice endpoints are not exposed to the network. Do not change `HOST` to a public interface unless those endpoints are protected by server-side Firebase token verification and authorization.
+
+Do not commit `firebase-config.json`, `.env` files, service-account credentials, local invoice databases, dependency folders, build outputs, logs, or generated Firebase tooling files. The root `.gitignore` covers these artifacts.

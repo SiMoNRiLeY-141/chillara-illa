@@ -1,7 +1,42 @@
+# Dependencies and build output
 node_modules/
 dist/
+release/
+out/
+
+# Runtime data and local configuration
 invoices.db
 firebase-config.json
+.env
+.env.*
+!.env.example
 firebase-debug.log
-electron-v25.9.8-win32-x64.zip
+firebase-debug.*.log
+.firebase/
+.firebaserc.local
+
+# Privileged Firebase and Google Cloud credentials (never client-side)
+service-account*.json
+firebase-adminsdk-*.json
+*-firebase-adminsdk-*.json
+google-services.json
+GoogleService-Info.plist
+*.pem
+*.p12
+*.key
+
+# Generated Firebase Data Connect artifacts
+dataconnect/
+src/dataconnect-generated/
+
+# Local tooling, editor state, and logs
+.agents/
 .gemini/
+.vscode/
+*.code-workspace
+*.log
+
+# Downloaded archives and operating-system files
+*.zip
+.DS_Store
+Thumbs.db

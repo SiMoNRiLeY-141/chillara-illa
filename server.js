@@ -7,7 +7,35 @@ const cors = require('cors');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const HOST = process.env.HOST || '127.0.0.1';
 const DB_FILE = path.join(__dirname, 'invoices.db');
+const FIREBASE_WEB_CONFIG_FIELDS = [
+  'apiKey',
+  'authDomain',
+  'projectId',
+  'storageBucket',
+  'messagingSenderId',
+  'appId',
+  'measurementId'
+];
+
+function getFirebaseWebConfig() {
+  const configPath = path.join(__dirname, 'firebase-config.json');
+  if (!fs.existsSync(configPath)) return null;
+
+  try {
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    if (typeof config.apiKey !== 'string' || typeof config.projectId !== 'string') return null;
+
+    return Object.fromEntries(
+      FIREBASE_WEB_CONFIG_FIELDS
+        .filter((field) => typeof config[field] === 'string')
+        .map((field) => [field, config[field]])
+    );
+  } catch {
+    return null;
+  }
+}
 
 app.use(cors({
   origin: (origin, callback) => {
@@ -161,18 +189,18 @@ app.get('/api/export', (req, res) => {
   });
 });
 
-// Serve the git-ignored Firebase configuration file
+// Firebase web configuration identifies the project; it must never contain
+// privileged credentials. Only allowlisted public fields are returned.
 app.get('/firebase-config.json', (req, res) => {
-  const configPath = path.join(__dirname, 'firebase-config.json');
-  if (fs.existsSync(configPath)) {
-    res.sendFile(configPath);
-  } else {
-    res.status(404).json({ error: 'Firebase configuration file not found.' });
-  }
+  const config = getFirebaseWebConfig();
+  if (!config) return res.status(404).json({ error: 'Firebase configuration file not found or is invalid.' });
+
+  res.set('Cache-Control', 'no-store');
+  res.json(config);
 });
 
-app.listen(PORT, () => {
-  console.log(`Chillara Illa billing server running at http://localhost:${PORT}`);
+app.listen(PORT, HOST, () => {
+  console.log(`Chillara Illa billing server running at http://${HOST}:${PORT}`);
 });
 
 module.exports = { DB_FILE };
