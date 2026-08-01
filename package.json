@@ -7,7 +7,9 @@
     "start": "electron .",
     "server": "node server.js",
     "dev-server": "nodemon server.js",
-    "pack": "electron-builder --dir",
+    "test": "node --test test/*.test.js",
+    "rebuild:native": "electron-rebuild -f -w sqlite3",
+    "pack": "npm run rebuild:native && electron-builder --dir",
     "dist": "electron-builder"
   },
   "author": "",
@@ -16,19 +18,25 @@
     "body-parser": "^1.20.2",
     "cors": "^2.8.5",
     "express": "^4.18.2",
-    "sqlite3": "^5.1.6"
+    "sqlite3": "^6.0.1"
   },
   "devDependencies": {
+    "@electron/rebuild": "^3.7.1",
     "electron": "^25.9.8",
     "electron-builder": "^24.6.0"
   },
   "build": {
     "appId": "com.chillarailla.app",
     "productName": "Chillara Illa",
+    "npmRebuild": false,
+    "asarUnpack": [
+      "node_modules/sqlite3/build/Release/*.node"
+    ],
     "publish": null,
     "files": [
       "main.js",
       "preload.js",
+      "server.js",
       "public/**/*",
       "package.json"
     ],
@@ -42,6 +50,6 @@
   },
   "allowScripts": {
     "electron@25.9.8": true,
-    "sqlite3@5.1.7": true
+    "sqlite3@6.0.1": true
   }
 }

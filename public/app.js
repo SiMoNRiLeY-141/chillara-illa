@@ -33,6 +33,30 @@ async function loadConfig() {
 
 let firebaseApiPromise;
 let firebaseAuthState = null;
+let localApiCredentialsPromise;
+
+async function localRequest(path, options = {}) {
+  if (!localApiCredentialsPromise) {
+    if (!window.electron?.getLocalApiCredentials) throw new Error("The local desktop service is unavailable.");
+    localApiCredentialsPromise = window.electron.getLocalApiCredentials();
+  }
+  const credentials = await localApiCredentialsPromise;
+  const headers = new Headers(options.headers || {});
+  headers.set("X-Chillara-Secret", credentials.secret);
+  if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  const response = await fetch(`${credentials.origin}${path}`, { ...options, headers });
+  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Local storage request failed.");
+  return response.status === 204 ? null : response.json();
+}
+
+function activeUserId() {
+  if (!firebaseAuthState?.localId) throw new Error("Please log in to save invoices.");
+  return firebaseAuthState.localId;
+}
+
+function toUiInvoice(row) {
+  return row && { ...row, invNo: row.inv_no, date: row.invoice_day, billTo: row.bill_to, taxPct: row.tax_pct, createdAt: row.created_at, syncStatus: row.sync_status };
+}
 
 function restoreSession() {
   try {
@@ -61,18 +85,19 @@ function restoreSession() {
 
 async function getShopProfile() {
   try {
-    const response = await firestoreRequest(`/users/${firebaseAuthState.localId}/settings/profile`, { method: "GET" });
-    return decodeFirestoreDocument(await response.json());
+    const cached = await localRequest(`/api/profile?userId=${encodeURIComponent(activeUserId())}`);
+    if (cached) return cached;
+    const response = await firestoreRequest(`/users/${activeUserId()}/settings/profile`, { method: "GET" });
+    const migrated = decodeFirestoreDocument(await response.json());
+    if (migrated) await saveShopProfile(migrated);
+    return migrated;
   } catch (e) {
     return null;
   }
 }
 
 async function saveShopProfile(profileData) {
-  await firestoreRequest(`/users/${firebaseAuthState.localId}/settings/profile`, {
-    method: "PATCH",
-    body: JSON.stringify(encodeFirestoreRecord(profileData))
-  });
+  await localRequest('/api/profile', { method: 'PUT', body: JSON.stringify({ userId: activeUserId(), payload: profileData }) });
 }
 
 async function sendPasswordReset(email) {
@@ -230,6 +255,7 @@ async function loginRest(email, password) {
   };
   localStorage.setItem("firebase.auth", JSON.stringify(firebaseAuthState));
   updateAuthUI();
+  await syncPendingChanges().catch(() => {});
   return firebaseAuthState;
 }
 
@@ -254,6 +280,7 @@ async function registerRest(email, password) {
   };
   localStorage.setItem("firebase.auth", JSON.stringify(firebaseAuthState));
   updateAuthUI();
+  await syncPendingChanges().catch(() => {});
   return firebaseAuthState;
 }
 
@@ -303,7 +330,7 @@ function decodeFirestoreFields(fields = {}) {
 
 function encodeFirestoreValue(value) {
   if (Array.isArray(value)) {
-    return { stringValue: JSON.stringify(value) };
+    return { arrayValue: { values: value.map(encodeFirestoreValue) } };
   }
   if (value === null || value === undefined) {
     return { nullValue: null };
@@ -316,6 +343,9 @@ function encodeFirestoreValue(value) {
   }
   if (value instanceof Date) {
     return { timestampValue: value.toISOString() };
+  }
+  if (typeof value === "object") {
+    return { mapValue: { fields: Object.fromEntries(Object.entries(value).map(([key, nestedValue]) => [key, encodeFirestoreValue(nestedValue)])) } };
   }
   return { stringValue: String(value) };
 }
@@ -408,116 +438,78 @@ async function firestoreRequest(path, options = {}) {
   return response;
 }
 
-function ensureFirebaseApi() {
-  if (window.api && window.api.saveInvoice) {
-    return Promise.resolve(window.api);
-  }
+function localInvoiceForFirebase(invoice) {
+  return {
+    id: invoice.id,
+    invNo: invoice.inv_no,
+    date: invoice.invoice_day,
+    billTo: invoice.bill_to,
+    items: invoice.items || [],
+    taxPct: invoice.tax_pct,
+    subtotal: invoice.subtotal,
+    tax: invoice.tax,
+    total: invoice.total,
+    createdAt: invoice.created_at,
+    updatedAt: invoice.updated_at
+  };
+}
 
+async function syncPendingChanges() {
+  if (!firebaseAuthState?.localId || !firebaseConfig) return;
+  const userId = activeUserId();
+  const jobs = await localRequest(`/api/sync/pending?userId=${encodeURIComponent(userId)}`);
+  for (const job of jobs) {
+    try {
+      let response;
+      if (job.entity_type === 'invoice') {
+        response = await firestoreRequest(`/users/${userId}/invoices?documentId=${encodeURIComponent(job.entity_id)}`, {
+          method: 'POST', body: JSON.stringify(encodeFirestoreRecord(localInvoiceForFirebase(job.payload)))
+        });
+      } else {
+        const suffix = job.firebaseUpdateTime ? `?currentDocument.updateTime=${encodeURIComponent(job.firebaseUpdateTime)}` : '';
+        response = await firestoreRequest(`/users/${userId}/settings/profile${suffix}`, {
+          method: 'PATCH', body: JSON.stringify(encodeFirestoreRecord(job.payload))
+        });
+      }
+      const document = await response.json();
+      await localRequest('/api/sync/result', { method: 'POST', body: JSON.stringify({ userId, entityType: job.entity_type, entityId: job.entity_id, status: 'synced', firebaseUpdateTime: document.updateTime }) });
+    } catch (error) {
+      const conflict = /ALREADY_EXISTS|FAILED_PRECONDITION|409|412/i.test(error.message);
+      await localRequest('/api/sync/result', { method: 'POST', body: JSON.stringify({ userId, entityType: job.entity_type, entityId: job.entity_id, status: conflict ? 'conflict' : 'failed', localPayload: job.payload, error: error.message }) });
+    }
+  }
+}
+
+async function migrateCloudInvoicesIfNeeded(localRows) {
+  if (localRows.length || !firebaseAuthState?.localId || !firebaseConfig) return localRows;
+  const response = await firestoreRequest(`/users/${activeUserId()}:runQuery`, {
+    method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'invoices' }] } })
+  });
+  const cloudRows = (await response.json()).filter((item) => item.document).map((item) => decodeFirestoreDocument(item.document)).filter(Boolean);
+  if (!cloudRows.length) return localRows;
+  await localRequest('/api/invoices/import', { method: 'POST', body: JSON.stringify({ userId: activeUserId(), invoices: cloudRows }) });
+  return await localRequest(`/api/invoices?userId=${encodeURIComponent(activeUserId())}`);
+}
+
+function ensureFirebaseApi() {
   if (firebaseApiPromise) {
     return firebaseApiPromise;
   }
 
   firebaseApiPromise = (async () => {
-    const getInvoicesPath = () => firebaseAuthState ? `/users/${firebaseAuthState.localId}/invoices` : "";
-
     window.api = {
       async getFirebaseStatus() {
-        try {
-          restoreSession();
-          return {
-            configured: Boolean(firebaseConfig),
-            connected: Boolean(firebaseAuthState && firebaseAuthState.localId),
-            userId: firebaseAuthState ? firebaseAuthState.localId : null,
-            email: firebaseAuthState ? firebaseAuthState.email : null,
-          };
-        } catch (e) {
-          throw new Error("Firebase Auth failed: " + e.message);
-        }
+        restoreSession();
+        return { configured: Boolean(firebaseConfig), connected: Boolean(firebaseAuthState?.localId), userId: firebaseAuthState?.localId || null, email: firebaseAuthState?.email || null };
       },
-
-      async saveInvoice(payload) {
-        if (!firebaseAuthState) restoreSession();
-        if (!firebaseAuthState) {
-          throw new Error("Please log in to save invoices.");
-        }
-        const items = Array.isArray(payload.items) ? payload.items : [];
-        const taxPct = Number(payload.taxPct) || 0;
-        const subtotal = Number.isFinite(Number(payload.subtotal))
-          ? Number(payload.subtotal)
-          : items.reduce((sum, item) => sum + (Number(item.qty) || 0) * (Number(item.rate) || 0), 0);
-        const tax = subtotal * (taxPct / 100);
-        const total = subtotal + tax;
-        const date = payload.date || new Date().toISOString().slice(0, 10);
-        const invNoProvided = Boolean(payload.invNo && String(payload.invNo).trim());
-        const record = {
-          invNo: invNoProvided ? String(payload.invNo).trim() : "",
-          date,
-          billTo: payload.billTo || "",
-          items,
-          taxPct,
-          subtotal,
-          tax,
-          total,
-          createdAt: new Date().toISOString(),
-        };
-
-        const createResponse = await firestoreRequest(getInvoicesPath(), {
-          method: "POST",
-          body: JSON.stringify(encodeFirestoreRecord(record)),
-        });
-        const createdDocument = decodeFirestoreDocument(await createResponse.json());
-        if (!createdDocument || !createdDocument.id) {
-          throw new Error("Failed to create invoice document.");
-        }
-
-        const documentId = createdDocument.id;
-        if (!invNoProvided) {
-          const day = new Date(date);
-          const ymd = `${day.getFullYear()}${String(day.getMonth() + 1).padStart(2, "0")}${String(day.getDate()).padStart(2, "0")}`;
-          record.invNo = `INV-${ymd}-${String(documentId).replace(/[^a-zA-Z0-9]/g, "").slice(0, 6).toUpperCase()}`;
-          await firestoreRequest(`${getInvoicesPath()}/${documentId}?updateMask.fieldPaths=invNo`, {
-            method: "PATCH",
-            body: JSON.stringify({ fields: { invNo: { stringValue: record.invNo } } }),
-          });
-        }
-
-        return { id: documentId, ...record };
-      },
-
+      async saveInvoice(payload) { return toUiInvoice(await localRequest('/api/invoices', { method: 'POST', body: JSON.stringify({ userId: activeUserId(), payload }) })); },
       async listInvoices(filter = {}) {
-        if (!firebaseAuthState) restoreSession();
-        if (!firebaseAuthState) {
-          throw new Error("Please log in to browse invoices.");
-        }
-        const queryPath = `/users/${firebaseAuthState.localId}:runQuery`;
-        const payloadQuery = { structuredQuery: { from: [{ collectionId: 'invoices' }] } };
-        const response = await firestoreRequest(queryPath, {
-          method: "POST",
-          body: JSON.stringify(payloadQuery)
-        });
-        const payload = await response.json();
-        const rows = payload
-          .filter(item => item.document)
-          .map(item => decodeFirestoreDocument(item.document))
-          .filter(Boolean);
-        return rows
-          .filter((row) => {
-            let ok = true;
-            if (filter.from) ok = ok && String(row.date || "") >= filter.from;
-            if (filter.to) ok = ok && String(row.date || "") <= filter.to;
-            if (filter.invNo) ok = ok && String(row.invNo || "").includes(String(filter.invNo));
-            return ok;
-          })
-          .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")) || String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+        const rows = await migrateCloudInvoicesIfNeeded(await localRequest(`/api/invoices?userId=${encodeURIComponent(activeUserId())}`));
+        return rows.filter((row) => (!filter.from || row.invoice_day >= filter.from) && (!filter.to || row.invoice_day <= filter.to) && (!filter.invNo || row.inv_no.includes(filter.invNo))).map(toUiInvoice);
       },
-
       async getInvoice(id) {
-        if (!firebaseAuthState) restoreSession();
-        if (!firebaseAuthState) {
-          throw new Error("Please log in to retrieve invoices.");
-        }
-        const response = await firestoreRequest(`${getInvoicesPath()}/${String(id)}`, { method: "GET" });
-        return decodeFirestoreDocument(await response.json());
+        const row = await localRequest(`/api/invoices/${encodeURIComponent(id)}?userId=${encodeURIComponent(activeUserId())}`);
+        return toUiInvoice(row);
       },
     };
 
@@ -573,22 +565,34 @@ function saveState() {
     localStorage.setItem("invoice.items", JSON.stringify(items));
     localStorage.setItem("invoice.meta", JSON.stringify({ invNo: $("invNo").value, invDate: $("invDate").value, billTo: $("billTo").value, taxPct: $("taxPct").value }));
   } catch (e) {}
+  if (firebaseAuthState?.localId) {
+    localRequest('/api/draft', { method: 'PUT', body: JSON.stringify({ userId: firebaseAuthState.localId, payload: { items, invNo: $("invNo").value, invDate: $("invDate").value, billTo: $("billTo").value, taxPct: $("taxPct").value } }) }).catch(() => {});
+  }
 }
 
-function loadState() {
+async function loadState() {
   try {
-    const raw = localStorage.getItem("invoice.items");
-    if (raw) items = JSON.parse(raw);
-    const meta = JSON.parse(localStorage.getItem("invoice.meta") || "null");
+    let meta = null;
+    if (firebaseAuthState?.localId) {
+      const draft = await localRequest(`/api/draft?userId=${encodeURIComponent(firebaseAuthState.localId)}`);
+      if (draft) { items = Array.isArray(draft.items) ? draft.items : []; meta = draft; }
+    }
+    if (!meta) {
+      const raw = localStorage.getItem("invoice.items");
+      if (raw) items = JSON.parse(raw);
+      meta = JSON.parse(localStorage.getItem("invoice.meta") || "null");
+    }
     if (meta) {
       $("invNo").value = meta.invNo || "";
-      $("invDate").value = meta.invDate || "";
+      $("invDate").value = meta.invDate || new Date().toISOString().slice(0, 10);
       $("billTo").value = meta.billTo || "";
       $("taxPct").value = meta.taxPct || 0;
+      return true;
     }
   } catch (e) {
     items = [];
   }
+  return false;
 }
 
 function getNextInvoiceNo(invoices) {
@@ -619,20 +623,9 @@ function getNextInvoiceNo(invoices) {
 }
 
 async function fetchNextInvoiceNo() {
-  try {
-    const api = await ensureFirebaseApi();
-    const invoices = await api.listInvoices({});
-    const nextInvNo = getNextInvoiceNo(invoices);
-    $("invNo").value = nextInvNo;
-    updatePreview();
-    saveState();
-  } catch (error) {
-    console.error("Failed to fetch next invoice number:", error);
-    const d = new Date();
-    const ymd = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
-    $("invNo").value = `INV-${ymd}-001`;
-    updatePreview();
-  }
+  // The local SQLite transaction assigns the definitive number at save time.
+  $("invNo").value = "Assigned on save";
+  updatePreview();
 }
 
 function clearForm() {
@@ -644,6 +637,7 @@ function clearForm() {
   renderInputs();
   updatePreview();
   saveState();
+  if (firebaseAuthState?.localId) localRequest(`/api/draft?userId=${encodeURIComponent(firebaseAuthState.localId)}`, { method: 'DELETE' }).catch(() => {});
   fetchNextInvoiceNo();
 }
 
@@ -986,6 +980,7 @@ async function saveInvoiceToDB() {
       updatePreview();
       saveState();
       showToast("Saved invoice successfully!", "success");
+      syncPendingChanges().catch(() => {});
       return saved;
     }
     return null;
@@ -1013,6 +1008,7 @@ async function queryInvoices(filter = {}) {
 
 async function renderBrowser(filter = {}) {
   const rows = await queryInvoices(filter);
+  renderSyncConflicts().catch(() => {});
   const body = $("browserBody");
   body.innerHTML = "";
   rows.sort((a, b) => (a.date || "") < (b.date || "") ? 1 : -1);
@@ -1050,6 +1046,31 @@ async function renderBrowser(filter = {}) {
     tr.appendChild(tdAction);
 
     body.appendChild(tr);
+  });
+}
+
+async function renderSyncConflicts() {
+  if (!firebaseAuthState?.localId) return;
+  const container = $("syncConflictList");
+  const conflicts = await localRequest(`/api/conflicts?userId=${encodeURIComponent(firebaseAuthState.localId)}`);
+  container.innerHTML = "";
+  if (!conflicts.length) return;
+  const heading = document.createElement("p");
+  heading.textContent = `${conflicts.length} sync conflict${conflicts.length === 1 ? "" : "s"} need review. Both versions are retained.`;
+  container.appendChild(heading);
+  conflicts.forEach((conflict) => {
+    const row = document.createElement("div");
+    row.className = "sync-conflict-row";
+    const label = document.createElement("span");
+    label.textContent = `${conflict.entity_type} ${conflict.entity_id}`;
+    const acknowledge = document.createElement("button");
+    acknowledge.textContent = "Reviewed";
+    acknowledge.addEventListener("click", async () => {
+      await localRequest(`/api/conflicts/${conflict.id}/resolve`, { method: "POST", body: JSON.stringify({ userId: firebaseAuthState.localId, resolution: "reviewed" }) });
+      renderSyncConflicts();
+    });
+    row.append(label, acknowledge);
+    container.appendChild(row);
   });
 }
 
@@ -1115,7 +1136,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
   restoreSession();
   updateAuthUI();
-  clearForm();
+  const restoredDraft = await loadState();
+  if (!restoredDraft) clearForm();
   $("addItemBtn").addEventListener("click", (event) => { event.preventDefault(); addItem(); });
   $("printBtn").addEventListener("click", () => window.print());
   $("invNo").addEventListener("input", () => { saveState(); updatePreview(); });
@@ -1125,6 +1147,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   renderInputs();
   updatePreview();
   refreshFirebaseStatus();
+  syncPendingChanges().catch(() => {});
   
   // Modals close triggers
   $("openBtn").addEventListener("click", () => { $("browserPanel").style.display = "flex"; renderBrowser({}); });
@@ -1197,6 +1220,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       btn.disabled = false;
 
       showToast("Shop profile saved successfully!", "success");
+      syncPendingChanges().catch(() => {});
       updateShopProfileUI(profileData);
       closeProfileModal();
     } catch (e) {

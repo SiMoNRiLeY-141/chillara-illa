@@ -2,15 +2,47 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Every application record is stored beneath the authenticated owner's UID.
-    // The UID is derived from Firebase Authentication, never client input.
-    match /users/{userId}/{document=**} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+    function owns(userId) {
+      return request.auth != null && request.auth.uid == userId;
     }
-
-    // Deny all paths not explicitly granted above.
-    match /{document=**} {
-      allow read, write: if false;
+    function invoiceFields() {
+      return request.resource.data.keys().hasOnly(['id', 'invNo', 'date', 'billTo', 'items', 'taxPct', 'subtotal', 'tax', 'total', 'createdAt', 'updatedAt'])
+        && request.resource.data.keys().hasAll(['id', 'invNo', 'date', 'billTo', 'items', 'taxPct', 'subtotal', 'tax', 'total', 'createdAt', 'updatedAt'])
+        && request.resource.data.id is string && request.resource.data.id.size() <= 64
+        && request.resource.data.invNo is string && request.resource.data.invNo.size() <= 64
+        && request.resource.data.date is string && request.resource.data.date.size() == 10
+        && request.resource.data.billTo is string && request.resource.data.billTo.size() <= 4000
+        && request.resource.data.items is list && request.resource.data.items.size() <= 100
+        && request.resource.data.taxPct is number && request.resource.data.taxPct >= 0 && request.resource.data.taxPct <= 100
+        && request.resource.data.subtotal is number && request.resource.data.tax is number && request.resource.data.total is number
+        && request.resource.data.createdAt is string && request.resource.data.updatedAt is string;
     }
+    match /users/{userId}/invoices/{invoiceId} {
+      allow get, list: if owns(userId);
+      allow create: if owns(userId) && request.resource.data.id == invoiceId && invoiceFields();
+      allow update: if owns(userId) && invoiceFields()
+        && request.resource.data.id == resource.data.id
+        && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if false;
+    }
+    match /users/{userId}/settings/profile {
+      allow get: if owns(userId);
+      allow create, update: if owns(userId)
+        && request.resource.data.keys().hasOnly(['shopName', 'address', 'phone', 'email', 'gstNo', 'logoBase64'])
+        && request.resource.data.shopName is string && request.resource.data.shopName.size() <= 200
+        && request.resource.data.address is string && request.resource.data.address.size() <= 1000
+        && request.resource.data.phone is string && request.resource.data.phone.size() <= 64
+        && request.resource.data.email is string && request.resource.data.email.size() <= 320
+        && (!('gstNo' in request.resource.data) || request.resource.data.gstNo is string && request.resource.data.gstNo.size() <= 64)
+        && (!('logoBase64' in request.resource.data) || request.resource.data.logoBase64 == null || request.resource.data.logoBase64 is string && request.resource.data.logoBase64.size() <= 1500000);
+      allow delete: if false;
+    }
+    match /users/{userId}/conflicts/{conflictId} {
+      allow get, list: if owns(userId);
+      allow create: if owns(userId) && request.resource.data.keys().hasOnly(['entityId', 'createdAt', 'localPayload', 'remotePayload'])
+        && request.resource.data.entityId is string && request.resource.data.createdAt is string;
+      allow update, delete: if false;
+    }
+    match /{document=**} { allow read, write: if false; }
   }
 }
